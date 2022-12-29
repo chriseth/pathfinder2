@@ -21,6 +21,10 @@ impl DB {
         db
     }
 
+    pub fn safes(&self) -> &BTreeMap<Address, Safe> {
+        &self.safes
+    }
+
     pub fn edges(&self) -> &EdgeDB {
         &self.edges
     }

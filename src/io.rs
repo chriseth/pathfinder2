@@ -46,7 +46,7 @@ pub fn read_edges_csv(path: &String) -> Result<EdgeDB, io::Error> {
 
 pub fn write_edges_binary(edges: &EdgeDB, path: &String) -> Result<(), io::Error> {
     let mut file = File::create(path)?;
-    let address_index = write_address_index(&mut file, edges)?;
+    let address_index = write_address_index(&mut file, addresses_from_edges(edges))?;
     write_edges(&mut file, edges, &address_index)
 }
 
@@ -123,6 +123,46 @@ pub fn import_from_safes_binary(path: &str) -> Result<DB, io::Error> {
     Ok(DB::new(safes, token_owner))
 }
 
+pub fn export_safes_to_binary(db: &DB, path: &str) -> Result<(), io::Error> {
+    let mut file = File::create(path)?;
+
+    let address_index = write_address_index(&mut file, addresses_from_safes(db.safes()))?;
+
+    // organizations
+    let organizations = db.safes().iter().filter(|s| s.1.organization);
+    write_u32(&mut file, organizations.clone().count() as u32)?;
+    for (user, _) in organizations {
+        write_address(&mut file, user, &address_index)?;
+    }
+
+    // trust edges
+    let trust_edges = db.safes().iter().flat_map(|(user, safe)| {
+        safe.limit_percentage
+            .iter()
+            .map(|(other, percentage)| (*user, other, percentage))
+    });
+    write_u32(&mut file, trust_edges.clone().count() as u32)?;
+    for (user, send_to, percentage) in trust_edges {
+        write_address(&mut file, &user, &address_index)?;
+        write_address(&mut file, send_to, &address_index)?;
+        write_u8(&mut file, *percentage)?;
+    }
+
+    // balances
+    let balances = db.safes().iter().flat_map(|(user, safe)| {
+        safe.balances
+            .iter()
+            .map(|(token_owner, amount)| (*user, token_owner, amount))
+    });
+    write_u32(&mut file, balances.clone().count() as u32)?;
+    for (user, token_owner, amount) in balances {
+        write_address(&mut file, &user, &address_index)?;
+        write_address(&mut file, token_owner, &address_index)?;
+        write_u256(&mut file, amount)?;
+    }
+    Ok(())
+}
+
 fn read_address_index(file: &mut File) -> Result<HashMap<u32, Address>, io::Error> {
     let address_count = read_u32(file)?;
     let mut addresses = HashMap::new();
@@ -134,10 +174,7 @@ fn read_address_index(file: &mut File) -> Result<HashMap<u32, Address>, io::Erro
     Ok(addresses)
 }
 
-fn write_address_index(
-    file: &mut File,
-    edges: &EdgeDB,
-) -> Result<HashMap<Address, u32>, io::Error> {
+fn addresses_from_edges(edges: &EdgeDB) -> BTreeSet<Address> {
     let mut addresses = BTreeSet::new();
     for Edge {
         from, to, token, ..
@@ -147,6 +184,37 @@ fn write_address_index(
         addresses.insert(*to);
         addresses.insert(*token);
     }
+    addresses
+}
+
+fn addresses_from_safes(safes: &BTreeMap<Address, Safe>) -> BTreeSet<Address> {
+    let mut addresses = BTreeSet::new();
+    for (
+        user,
+        Safe {
+            token_address,
+            balances,
+            limit_percentage,
+            organization: _,
+        },
+    ) in safes
+    {
+        addresses.insert(*user);
+        addresses.insert(*token_address);
+        for other in balances.keys() {
+            addresses.insert(*other);
+        }
+        for other in limit_percentage.keys() {
+            addresses.insert(*other);
+        }
+    }
+    addresses
+}
+
+fn write_address_index(
+    file: &mut File,
+    addresses: BTreeSet<Address>,
+) -> Result<HashMap<Address, u32>, io::Error> {
     write_u32(file, addresses.len() as u32)?;
     let mut index = HashMap::new();
     for (i, addr) in addresses.into_iter().enumerate() {
